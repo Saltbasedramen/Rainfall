@@ -1,0 +1,231 @@
+---
+title: "project"
+author: "xu id: 27701794"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(forecast)
+library(mgcv)
+options(digits = 4)
+```
+
+read data
+```{r}
+max_temp <- read_csv("max temp.csv")
+min_temp <- read_csv("min temp.csv")
+rainfall <- read_csv("rainfall.csv")
+
+```
+# Data wrangling
+
+#Data Checking
+
+# Find the average monthly precipitation
+```{r}
+rainfall <- read_csv("rainfall.csv")
+
+summary(rainfall)
+
+#There are 2301 NA's in the dataset
+rainfall <- rainfall %>%  drop_na('Rainfall amount (millimetres)')
+
+# drop 2021 data 
+rainfall <- rainfall %>%  filter(Year != 2021)
+
+rainfall %>% 
+  select(Year, Month, Day, `Rainfall amount (millimetres)`, `Period over which rainfall was measured (days)`, Quality) %>% 
+  rename(Amount = `Rainfall amount (millimetres)`, Period_r = `Period over which rainfall was measured (days)`, Quality_r = Quality ) %>% 
+  mutate(Date = make_date(Year, Month, Day),
+         Rainfall = ifelse(Amount>0, "1","0")) %>%
+  mutate(Rainfall = as.numeric(Rainfall)) %>% 
+  select(Year, Month, Day, Date, Amount, Rainfall, Period_r, Quality_r)-> rainfall1
+
+rainfall_1 <- rainfall1 %>% 
+  select(Year, Month, Day,Amount)
+
+by_month <- rainfall_1 %>% 
+  spread(key = Month, value = Amount)
+
+by_month <- by_month %>% 
+  select('01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12')
+
+month <- c(1:12)
+month_total <- colSums(by_month, na.rm = TRUE)
+month_prop <- colSums(by_month, na.rm = TRUE)/(sum(by_month, na.rm = TRUE))*100
+
+df_m <- data.frame(month,month_total, month_prop)
+df_m[which.max(df_m$month_prop),]
+df_m[which.min(df_m$month_prop),]
+df_m
+df_m %>% 
+  mutate(month = as.numeric(month)) %>% 
+  ggplot(aes(month,month_total)) +
+  geom_histogram(stat = "identity") +
+  geom_text(aes(label=month_total),position=position_dodge(width=0.9), vjust=-0.25) +
+  scale_x_continuous("month", labels = as.character(month), breaks = month)
+
+```
+# Find the average yearly precipitation
+```{r}
+by_year <- rainfall_1 %>% 
+  spread(key = Year, value = Amount)
+by_year %>% select(`1964`,`1965`,`1966`,`1967`,`1968`,`1969`,`1970`,`1971`,`1972`,`1973`,`1974`,`1975`,`1976`,`1977`,`1978`,`1979`,`1980`,`1981`,`1982`,`1983`,`1984`,`1985`,`1986`,`1987`,`1988`,`1989`,`1990`,`1991`,`1992`,`1993`,`1999`,`2000`,`2001`,`2002`,`2003`,`2004`,`2005`,`2006`,`2007`,`2008`,`2009`,`2010`,`2011`,`2012`,`2013`,`2014`,`2015`,`2016`,`2017`,`2018`,`2019`,`2020`) ->by_year
+
+year<- c('1964','1965','1966','1967','1968','1969','1970','1971','1972','1973','1974','1975','1976','1977','1978','1979','1980','1981','1982','1983','1984','1985','1986','1987','1988','1989','1990','1991','1992','1993','1999','2000','2001','2002','2003','2004','2005','2006','2007','2008','2009','2010','2011','2012','2013','2014','2015','2016','2017','2018','2019','2020')
+
+year_total <- colSums(by_year, na.rm = TRUE)
+year_prop <- colSums(by_year, na.rm = TRUE)/(sum(by_month, na.rm = TRUE))*100
+df_y <- data.frame(year, year_total, year_prop)
+df_y
+df_y[which.max(df_y$year_prop),]
+df_y[which.min(df_y$year_prop),] 
+summary(df_y)
+df_y %>% mutate(year = as.numeric(year)) -> df_y
+df_y %>% 
+  ggplot(aes(year,year_total)) +
+  geom_histogram(stat = "identity") 
+  
+
+df_y %>% 
+  ggplot(aes(x = year)) +
+  geom_histogram(aes(y = year_total),stat = "identity") 
+```
+# Find the probability of rainfall monthly
+```{r}
+rainfall_2 <- rainfall1 %>% 
+  select(Year, Month, Day,Rainfall)
+
+by_month_p <- rainfall_2 %>% 
+  spread(key = Month, value = Rainfall)
+
+by_month_p <- by_month_p %>% 
+  select('01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12')
+
+Month <- c(1:12)
+month_prop_p <- colSums(by_month_p, na.rm = TRUE)/1612
+df_m_p <- data.frame(Month,month_prop_p)
+df_m_p[which.max(df_m_p$month_prop_p),]
+df_m_p[which.min(df_m_p$month_prop_p),]
+df_m_p
+
+df_m_p %>% 
+  ggplot(aes(month, month_prop_p)) +
+  geom_histogram(stat = "identity") +
+  scale_x_continuous("month", labels = as.character(Month), breaks = month)
+```
+# Fitting Fourier series model for estimating rainfall probability
+
+```{r}
+# Create fourier terms using forecast's fourier function  
+rainfall_3 <- rainfall1 %>% 
+  select(Year, Month, Day, Amount, Rainfall, Period_r, Quality_r)
+
+ft <- forecast::fourier(ts(rep(1, NROW(rainfall_3)), frequency = 365), 3)  
+  
+colnames(ft) <- c("S1", "C1", "S2", "C2", "S3", "C3")  
+
+rainfall_t <- cbind(rainfall_3, ft)
+
+#Fit this model using lm and save the result
+rain_gam <- gam(Rainfall ~  S1 + C1 + S2 + C2 + S3 + C3, data = rainfall_t, family = binomial(),na.action=na.exclude)
+summary(rain_gam)
+
+rainfall_t %>% mutate(Predictions = predict(rain_gam, type = "response")) %>% 
+  mutate(Predictions = as.numeric(Predictions))-> Data1
+
+```
+```{r}
+Data1 %>% 
+  group_by(Month) %>% 
+  summarise(prediction_fourier = mean(Predictions)) -> Data1_pre
+Data1_pre <- Data1_pre %>% mutate(Month = as.numeric(Month))
+df_m_p
+test <- inner_join(Data1_pre, df_m_p, by = "Month")
+test
+```
+
+```{r}
+colors_test <- c("prediction_fourier" = "blue", "month_prop_p" = "red")
+test %>% 
+  ggplot(aes(x = Month)) +
+  geom_line(aes (y = prediction_fourier, color = "prediction_fourier")) +
+  geom_line(aes(y = month_prop_p, color = "month_prop_p")) +
+  scale_x_continuous("month", labels = as.character(Month), breaks = month) +
+  labs(x = "Month",
+         y = "(%)",
+         color = "Legend") +
+    scale_color_manual(values = colors_test)
+
+```
+# Find the effect of temperature on rainfall occurrence
+
+```{r}
+max_temp %>% 
+  select(Year, Month, Day, `Maximum temperature (Degree C)`, `Days of accumulation of maximum temperature`, Quality) %>% 
+  rename(Max_temp = `Maximum temperature (Degree C)`, Period_max = `Days of accumulation of maximum temperature`, Quality_max = Quality) %>% 
+  mutate(Date = make_date(Year, Month, Day)) %>% 
+  select(Date, Max_temp, Period_max, Quality_max)-> max_temp1
+
+min_temp %>% 
+  select(Year, Month, Day, `Minimum temperature (Degree C)`, `Days of accumulation of minimum temperature`, Quality) %>% 
+  rename(Min_temp = `Minimum temperature (Degree C)`, Period_min = `Days of accumulation of minimum temperature`, Quality_min = Quality) %>% 
+  mutate(Date = make_date(Year, Month, Day)) %>% 
+  select(Date, Min_temp, Period_min, Quality_min)-> min_temp1
+
+max_min_temp <- inner_join(max_temp1,min_temp1,by="Date") 
+rainfall_temp <- inner_join(max_min_temp, rainfall1, by = "Date")
+
+# Create fourier terms using forecast's fourier function  
+ft_2 <- forecast::fourier(ts(rep(1, NROW(rainfall_temp)), frequency = 365), 3)  
+  
+colnames(ft_2) <- c("S1", "C1", "S2", "C2", "S3", "C3")  
+
+rainfall_temp2 <- cbind(rainfall_temp, ft_2)
+
+rain_gam2 <- gam(Rainfall ~ S1 + C1 + S2 + C2 + S3 + C3, data = rainfall_temp2, family = binomial(),  na.action=na.exclude)
+summary(rain_gam2)
+```
+
+```{r}
+rainfall_temp2 %>% mutate(Predictions2 = predict(rain_gam2, type = "response")) %>% 
+  mutate(Predictions2 = as.numeric(Predictions2))-> Data2
+
+Data2 %>% separate(Date, c("Year", "Month", "Day"), sep = "-") -> Data2
+Data2 %>% 
+  group_by(Month) %>% 
+  summarise(prediction_fourier2 = mean(Predictions2, na.rm = TRUE)) -> Data2_pre
+Data2_pre <- Data2_pre %>% mutate(Month = as.numeric(Month))
+test2 <- inner_join(Data2_pre, df_m_p, by = "Month")
+test2
+```
+
+```{r}
+colors_test2 <- c("prediction_fourier2" = "blue", "month_prop_p" = "red")
+test2 %>% 
+  ggplot(aes(x = Month)) +
+  geom_line(aes (y = prediction_fourier2, color = "prediction_fourier2")) +
+  geom_line(aes(y = month_prop_p, color = "month_prop_p")) +
+  scale_x_continuous("month", labels = as.character(Month), breaks = month) +
+  labs(x = "Month",
+         y = "(%)",
+         color = "Legend") +
+    scale_color_manual(values = colors_test2)
+
+```
+
+```{r}
+AIC(rain_gam)
+AIC(rain_gam2)
+
+```
+
+
+
